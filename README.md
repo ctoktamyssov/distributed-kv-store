@@ -19,7 +19,7 @@ in-memory server up to a replicated Raft cluster.
 
 ## Stages
 
-- [ ] Stage 1: in-memory map over TCP
+- [X] Stage 1: in-memory map over TCP
 - [ ] Stage 2: write-ahead log
 - [ ] Stage 3: compaction
 - [ ] Stage 4: on-disk values (Bitcask-style)
@@ -29,9 +29,25 @@ in-memory server up to a replicated Raft cluster.
 
 ## Design decisions
 
-<!-- Write these as you go. Why a mutex? Why inside Store
-     rather than in the server? What happens to values with spaces? -->
+- **One goroutine per connection.** A blocked read on one client
+  shouldn't stall the others, and goroutines are cheap enough to
+  spend one per client.
+- **Mutex lives inside `Store`, not the server.** No caller can forget
+  to lock, and the store stays reusable when the log (Stage 2) and
+  Raft (Stage 6) wrap it.
+- **Plain `sync.Mutex` for now.** A map lookup holds the lock for
+  nanoseconds, so `RWMutex` would add little. Revisit with a benchmark.
+- **Values with spaces:** 
 
 ## What broke
 
-<!-- Bugs you hit and what they taught you. Interviewers love this. -->
+`TestConcurrent` runs 100 goroutines doing `Set`/`Get`/`Delete` on 10
+shared keys. With the locks removed it crashes:
+
+```
+fatal error: concurrent map writes
+```
+
+The fix was a `sync.Mutex` in `Store`, taken at the top of every
+method with `defer Unlock()`. Reads need the lock too, since a read
+concurrent with a write is still a race.
