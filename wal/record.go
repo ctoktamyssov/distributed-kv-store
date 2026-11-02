@@ -28,14 +28,22 @@ type Record struct {
 
 // Encode returns the on-disk bytes for r.
 func Encode(r Record) []byte {
-	// TODO 1: buf := make([]byte, headerSize+len(r.Key)+len(r.Value))
-	// TODO 2: buf[4] = r.Op
-	//         binary.LittleEndian.PutUint32(buf[5:9], keyLen)
-	//         binary.LittleEndian.PutUint32(buf[9:13], valLen)
-	// TODO 3: copy key, then value, after the header
-	// TODO 4: crc := crc32.ChecksumIEEE(buf[4:])  // covers everything after the crc
-	//         put it in buf[0:4]
-	return nil
+	keyLen := len(r.Key)
+	valLen := len(r.Value)
+
+	buf := make([]byte, headerSize+keyLen+valLen)
+
+	buf[4] = r.Op
+	binary.LittleEndian.PutUint32(buf[5:9], uint32(keyLen))
+	binary.LittleEndian.PutUint32(buf[9:13], uint32(valLen))
+
+	copy(buf[headerSize:], r.Key)
+	copy(buf[headerSize+keyLen:], r.Value)
+
+	crc := crc32.ChecksumIEEE(buf[4:])
+	binary.LittleEndian.PutUint32(buf[0:4], crc)
+
+	return buf
 }
 
 // Decode reads exactly one record from rd.
@@ -45,16 +53,42 @@ func Encode(r Record) []byte {
 //	io.ErrUnexpectedEOF partial record (torn write)
 //	ErrCorrupt          checksum mismatch or absurd lengths
 func Decode(rd io.Reader) (Record, int, error) {
-	// TODO 1: header := make([]byte, headerSize)
-	//         _, err := io.ReadFull(rd, header)
-	//         ReadFull already gives you the right errors here:
-	//         io.EOF if 0 bytes were read, io.ErrUnexpectedEOF if only some were.
-	// TODO 2: parse op, keyLen, valLen. If keyLen+valLen > maxRecordSize → ErrCorrupt.
-	// TODO 3: body := make([]byte, keyLen+valLen); io.ReadFull(rd, body)
-	//         GOTCHA: if the header was complete but the body is missing, ReadFull
-	//         returns io.EOF. That's a torn write, not a clean end, so convert it
-	//         to io.ErrUnexpectedEOF.
-	// TODO 4: recompute the crc over header[4:] + body and compare → ErrCorrupt
-	// TODO 5: return Record{...}, headerSize+len(body), nil
-	return Record{}, 0, nil
+	header := make([]byte, headerSize)
+	if _, err := io.ReadFull(rd, header); err != nil {
+		return Record{}, 0, err
+	}
+
+	op := header[4]
+	keyLen := binary.LittleEndian.Uint32(header[5:9])
+	valLen := binary.LittleEndian.Uint32(header[9:13])
+
+	if uint64(keyLen)+uint64(valLen) > maxRecordSize {
+		return Record{}, 0, ErrCorrupt
+	}
+	if op != OpSet && op != OpDel {
+		return Record{}, 0, ErrCorrupt
+	}
+
+	body := make([]byte, int(keyLen)+int(valLen))
+	if _, err := io.ReadFull(rd, body); err != nil {
+		if err == io.EOF {
+			err = io.ErrUnexpectedEOF
+		}
+		return Record{}, 0, err
+	}
+
+	want := binary.LittleEndian.Uint32(header[0:4])
+	got := crc32.ChecksumIEEE(header[4:])
+	got = crc32.Update(got, crc32.IEEETable, body)
+
+	if got != want {
+		return Record{}, 0, ErrCorrupt
+	}
+
+	r := Record{
+		Op:    op,
+		Key:   body[:keyLen],
+		Value: body[keyLen:],
+	}
+	return r, headerSize + len(body), nil
 }
