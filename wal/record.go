@@ -18,7 +18,10 @@ const headerSize = 4 + 1 + 4 + 4
 // Guards against a corrupted length field making you allocate 4 GB.
 const maxRecordSize = 64 << 20 // 64 MiB
 
-var ErrCorrupt = errors.New("wal: corrupt record")
+var (
+	ErrTooLarge = errors.New("wal: record too large")
+	ErrCorrupt  = errors.New("wal: corrupt record")
+)
 
 type Record struct {
 	Op    byte
